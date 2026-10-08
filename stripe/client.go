@@ -213,7 +213,12 @@ func (c *Client) CreateCheckoutSession(params *CheckoutSessionParams) (*stripeap
 		AutomaticTax: &stripeapi.CheckoutSessionAutomaticTaxParams{
 			Enabled: stripeapi.Bool(true),
 		},
-		// We store in the metadata the address of the organization
+		// We store in the metadata the address of the organization, both on the session
+		// itself (so reading the session back can authorize the caller against the
+		// organization before the subscription exists) and on the subscription it creates
+		Metadata: map[string]string{
+			"address": params.OrgAddress,
+		},
 		SubscriptionData: &stripeapi.CheckoutSessionSubscriptionDataParams{
 			Metadata: map[string]string{
 				"address": params.OrgAddress,
@@ -267,11 +272,20 @@ func (*Client) GetCheckoutSession(sessionID string) (*CheckoutSessionStatus, err
 	}
 
 	status := &CheckoutSessionStatus{
-		Status:             string(session.Status),
-		CustomerEmail:      session.CustomerDetails.Email,
-		SubscriptionStatus: string(session.Subscription.Status),
+		Status: string(session.Status),
 	}
-
+	if session.CustomerDetails != nil {
+		status.CustomerEmail = session.CustomerDetails.Email
+	}
+	if session.Subscription != nil {
+		status.SubscriptionStatus = string(session.Subscription.Status)
+	}
+	// the organization address stamped at creation; sessions created before it was stamped
+	// on the session itself carry it on the subscription (once the checkout completed)
+	status.OrgAddress = session.Metadata["address"]
+	if status.OrgAddress == "" && session.Subscription != nil {
+		status.OrgAddress = session.Subscription.Metadata["address"]
+	}
 	return status, nil
 }
 
@@ -305,4 +319,7 @@ type CheckoutSessionStatus struct {
 	Status             string `json:"status"`
 	CustomerEmail      string `json:"customer_email"`
 	SubscriptionStatus string `json:"subscription_status"`
+	// OrgAddress is the organization the session was created for, used to authorize who
+	// may read the session; it never reaches the wire.
+	OrgAddress string `json:"-"`
 }
