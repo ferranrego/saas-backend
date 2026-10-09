@@ -41,7 +41,8 @@ func TestGetCheckoutSessionAuthorization(t *testing.T) {
 				`"payment_status":"paid"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","code":"resource_missing"}}`))
+			_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","code":"resource_missing",` +
+				`"message":"No such checkout.session: 'cs_missing'"}}`))
 		}
 	}))
 	t.Cleanup(srv.Close)
@@ -68,6 +69,13 @@ func TestGetCheckoutSessionAuthorization(t *testing.T) {
 	// a session that does not exist answers with the same error
 	requestAndAssertError(errors.ErrCheckoutSessionNotFound,
 		t, http.MethodGet, adminToken, nil, "subscriptions", "checkout", "cs_missing")
+
+	// byte for byte: echoing Stripe's "No such checkout.session" would tell them apart
+	foreign, foreignCode := testRequest(t, http.MethodGet, strangerToken, nil, "subscriptions", "checkout", "cs_mine")
+	missing, missingCode := testRequest(t, http.MethodGet, strangerToken, nil, "subscriptions", "checkout", "cs_missing")
+	c.Assert(foreignCode, qt.Equals, http.StatusNotFound)
+	c.Assert(missingCode, qt.Equals, http.StatusNotFound)
+	c.Assert(string(missing), qt.Equals, string(foreign))
 
 	// no authentication at all is refused before reaching Stripe
 	requestAndAssertCode(http.StatusUnauthorized,

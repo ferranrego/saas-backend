@@ -178,8 +178,11 @@ func (h *StripeHandlers) GetCheckoutSession(w http.ResponseWriter, r *http.Reque
 
 	status, err := h.service.GetCheckoutSession(sessionID)
 	if err != nil {
-		// a session that cannot be fetched answers like one the caller may not read
-		errors.ErrCheckoutSessionNotFound.WithErr(err).Write(w)
+		// a session that cannot be fetched answers like one the caller may not read. The
+		// Stripe error stays in the log: echoed in the body ("No such checkout.session")
+		// it would tell a missing session apart from someone else's
+		log.Infow("cannot get checkout session", "session", sessionID, "error", err)
+		errors.ErrCheckoutSessionNotFound.Write(w)
 		return
 	}
 
