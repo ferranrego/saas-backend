@@ -37,6 +37,11 @@ func parseMultipartForm(w http.ResponseWriter, r *http.Request) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxUploadBodySize)
 	// 32 MiB is the default used by FormFile() function
 	if err := r.ParseMultipartForm(32 * internal.MiB); err != nil {
+		var tooLarge *http.MaxBytesError
+		if stderrors.As(err, &tooLarge) {
+			errors.ErrRequestBodyTooLarge.Withf("the limit is %d bytes", MaxUploadBodySize).Write(w)
+			return false
+		}
 		errors.ErrStorageInvalidObject.Withf("could not parse form: %v", err).Write(w)
 		return false
 	}
@@ -63,6 +68,10 @@ func (osc *Client) processFile(w http.ResponseWriter, fileHeader *multipart.File
 	if err != nil {
 		if stderrors.Is(err, ErrorObjectTooLarge) {
 			errors.ErrRequestBodyTooLarge.Withf("%s: %v", fileHeader.Filename, err).Write(w)
+			return "", false
+		}
+		if stderrors.Is(err, ErrorObjectEmpty) {
+			errors.ErrStorageInvalidObject.Withf("%s: %v", fileHeader.Filename, err).Write(w)
 			return "", false
 		}
 		errors.ErrInternalStorageError.Withf("%s %v", fileHeader.Filename, err).Write(w)

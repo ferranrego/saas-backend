@@ -19,8 +19,10 @@ var (
 	ErrorInvalidObjectID = fmt.Errorf("invalid object ID")
 	// ErrorFileTypeNotSupported is returned when the file type is not in the supported types list.
 	ErrorFileTypeNotSupported = fmt.Errorf("file type not supported")
-	// ErrorObjectTooLarge is returned when an object is empty or exceeds MaxObjectSize.
-	ErrorObjectTooLarge = fmt.Errorf("object is empty or larger than %d bytes", MaxObjectSize)
+	// ErrorObjectTooLarge is returned when an object exceeds MaxObjectSize.
+	ErrorObjectTooLarge = fmt.Errorf("object is larger than %d bytes", MaxObjectSize)
+	// ErrorObjectEmpty is returned when an object has no content.
+	ErrorObjectEmpty = fmt.Errorf("object is empty")
 )
 
 const (
@@ -179,7 +181,10 @@ func (osc *Client) storagePrefix() string {
 // If an error occurs, it returns an empty string and the error.
 func (osc *Client) Put(data io.Reader, size int64, userID string) (string, error) {
 	// check the declared size before allocating a buffer for it
-	if size <= 0 || size > MaxObjectSize {
+	if size <= 0 {
+		return "", ErrorObjectEmpty
+	}
+	if size > MaxObjectSize {
 		return "", ErrorObjectTooLarge
 	}
 	buff := make([]byte, size)
