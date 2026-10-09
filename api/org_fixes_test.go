@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	qt "github.com/frankban/quicktest"
 	"github.com/vocdoni/saas-backend/api/apicommon"
 	"github.com/vocdoni/saas-backend/db"
@@ -157,4 +158,91 @@ func TestGroupUpdateRejectsOverlappingLists(t *testing.T) {
 	updated, err := testDB.OrganizationMemberGroup(group.ID, orgAddr)
 	c.Assert(err, qt.IsNil)
 	c.Assert(updated.MemberIDs, qt.DeepEquals, []string{members[0].ID})
+}
+
+// TestCreateSubOrganizationWithinPlan covers the regression where creating a suborganization
+// always failed: the parent check took the length of a fixed-size address, never zero. Within the
+// plan's limit a suborganization is created; past it the dedicated 400 is returned.
+func TestCreateSubOrganizationWithinPlan(t *testing.T) {
+	c := qt.New(t)
+	token := testCreateUser(t, "suborgplanpass123")
+	parentAddr := testCreateOrganization(t, token)
+
+	// the essential plan allows one suborganization
+	parent, err := testDB.Organization(parentAddr)
+	c.Assert(err, qt.IsNil)
+	parent.Subscription.PlanID = mockEssentialPlan.ID
+	c.Assert(testDB.SetOrganization(parent), qt.IsNil)
+
+	subOrgInfo := &apicommon.OrganizationInfo{
+		Type:   string(db.CompanyType),
+		Parent: &apicommon.OrganizationInfo{Address: parentAddr},
+	}
+	sub := requestAndParse[apicommon.OrganizationInfo](t, http.MethodPost, token, subOrgInfo, organizationsEndpoint)
+	c.Assert(sub.Parent, qt.Not(qt.IsNil))
+	c.Assert(sub.Parent.Address, qt.Equals, parentAddr)
+
+	// the plan is now exhausted
+	requestAndAssertError(errors.ErrMaxSubOrgsReached, t, http.MethodPost, token, subOrgInfo, organizationsEndpoint)
+
+	// a suborganization cannot be the parent of another one
+	nested := &apicommon.OrganizationInfo{
+		Type:   string(db.CompanyType),
+		Parent: &apicommon.OrganizationInfo{Address: sub.Address},
+	}
+	requestAndAssertError(errors.ErrMalformedBody, t, http.MethodPost, token, nested, organizationsEndpoint)
+}
+
+// TestOrganizationBillingEmailAdminOnly covers the regression where the public organization
+// endpoint returned the subscription billing email to anyone. Only admins of each organization in
+// the parent chain see its billing email, on the public endpoint and on /users/me.
+func TestOrganizationBillingEmailAdminOnly(t *testing.T) {
+	c := qt.New(t)
+	parentToken := testCreateUser(t, "billingparentpass123")
+	parentAddr := testCreateOrganization(t, parentToken)
+	childToken := testCreateUser(t, "billingchildpass123")
+	childAddr := testCreateOrganization(t, childToken)
+	viewerToken := testCreateUser(t, "billingviewerpass123")
+	viewer := requestAndParse[apicommon.UserInfo](t, http.MethodGet, viewerToken, nil, usersMeEndpoint)
+	c.Assert(testDB.AddUserToOrganization(viewer.Email, childAddr, db.ViewerRole), qt.IsNil)
+
+	// give both organizations a billing email and link the child to the parent
+	for addr, email := range map[common.Address]string{parentAddr: "parent@billing.test", childAddr: "child@billing.test"} {
+		org, err := testDB.Organization(addr)
+		c.Assert(err, qt.IsNil)
+		org.Subscription.Email = email
+		if addr == childAddr {
+			org.Parent = parentAddr
+		}
+		c.Assert(testDB.SetOrganization(org), qt.IsNil)
+	}
+
+	getInfo := func(token string) *apicommon.OrganizationInfo {
+		info := requestAndParse[apicommon.OrganizationInfo](t, http.MethodGet, token, nil,
+			"organizations", childAddr.String())
+		c.Assert(info.Subscription, qt.Not(qt.IsNil))
+		c.Assert(info.Parent, qt.Not(qt.IsNil))
+		c.Assert(info.Parent.Subscription, qt.Not(qt.IsNil))
+		return &info
+	}
+
+	// anonymous and non-admin members get no billing email at all
+	for _, token := range []string{"", viewerToken} {
+		info := getInfo(token)
+		c.Assert(info.Subscription.Email, qt.Equals, "")
+		c.Assert(info.Parent.Subscription.Email, qt.Equals, "")
+	}
+	// the child's admin gets the child's email, but not the parent's it does not administer
+	info := getInfo(childToken)
+	c.Assert(info.Subscription.Email, qt.Equals, "child@billing.test")
+	c.Assert(info.Parent.Subscription.Email, qt.Equals, "")
+
+	// /users/me applies the same rule per organization
+	viewerMe := requestAndParse[apicommon.UserInfo](t, http.MethodGet, viewerToken, nil, usersMeEndpoint)
+	c.Assert(viewerMe.Organizations, qt.HasLen, 1)
+	c.Assert(viewerMe.Organizations[0].Organization.Subscription.Email, qt.Equals, "")
+	childMe := requestAndParse[apicommon.UserInfo](t, http.MethodGet, childToken, nil, usersMeEndpoint)
+	c.Assert(childMe.Organizations, qt.HasLen, 1)
+	c.Assert(childMe.Organizations[0].Organization.Subscription.Email, qt.Equals, "child@billing.test")
+	c.Assert(childMe.Organizations[0].Organization.Parent.Subscription.Email, qt.Equals, "")
 }
