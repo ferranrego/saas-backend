@@ -117,6 +117,11 @@ func (s *Service) portalCustomerID(org *db.Organization) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve the customer of subscription %s: %w", subID, err)
 		}
+		// the stored id is only a pointer: the subscription must still be this organization's,
+		// or its customer (and portal) is another organization's
+		if stamped := subscription.Metadata["address"]; common.HexToAddress(stamped) != org.Address {
+			return "", fmt.Errorf("subscription %s belongs to organization %q, not %s", subID, stamped, org.Address)
+		}
 		if subscription.Customer == nil || subscription.Customer.ID == "" {
 			return "", fmt.Errorf("subscription %s has no customer", subID)
 		}

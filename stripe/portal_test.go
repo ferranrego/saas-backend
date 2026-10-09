@@ -16,6 +16,9 @@ import (
 type stubPortalBackend struct {
 	// subscriptionCustomer answers GET /v1/subscriptions/{id}; empty means no subscription exists
 	subscriptionCustomer string
+	// subscriptionAddress is the address metadata of the subscription; empty means the
+	// organization under test
+	subscriptionAddress string
 	// addressCustomer answers the customer search by address metadata; empty means no match
 	addressCustomer string
 	// emailCustomers answers any customer list by email, in order. The portal must never
@@ -24,6 +27,9 @@ type stubPortalBackend struct {
 	// portalCustomers records the customer of each portal session created
 	portalCustomers []string
 }
+
+// portalTestOrg is the organization whose portal the tests open.
+var portalTestOrg = common.HexToAddress("0x1234567890123456789012345678901234567890")
 
 func (b *stubPortalBackend) install(t *testing.T) {
 	t.Helper()
@@ -38,7 +44,12 @@ func (b *stubPortalBackend) install(t *testing.T) {
 				writeNotFound()
 				return
 			}
-			_, _ = w.Write([]byte(`{"id":"sub_live","object":"subscription","customer":"` + b.subscriptionCustomer + `"}`))
+			address := b.subscriptionAddress
+			if address == "" {
+				address = portalTestOrg.Hex()
+			}
+			_, _ = w.Write([]byte(`{"id":"sub_live","object":"subscription","customer":"` + b.subscriptionCustomer +
+				`","metadata":{"address":"` + address + `"}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/customers/search":
 			data := `[]`
 			if b.addressCustomer != "" {
@@ -78,7 +89,7 @@ func (b *stubPortalBackend) install(t *testing.T) {
 // which a creator shares across every organization they create.
 func TestCreatePortalSessionResolvesOrgCustomer(t *testing.T) {
 	c := qt.New(t)
-	orgAddress := common.HexToAddress("0x1234567890123456789012345678901234567890")
+	orgAddress := portalTestOrg
 	service := &Service{client: NewClient(&Config{APIKey: "sk_test_stub", WebhookSecret: "whsec_stub"})}
 
 	orgWithSubscription := &db.Organization{
@@ -114,6 +125,18 @@ func TestCreatePortalSessionResolvesOrgCustomer(t *testing.T) {
 		backend.install(t)
 		_, err := service.CreatePortalSession(orgWithSubscription)
 		c.Assert(err, qt.IsNotNil)
+		c.Assert(backend.portalCustomers, qt.HasLen, 0)
+	})
+
+	c.Run("a stored subscription now stamped for another organization is refused", func(c *qt.C) {
+		backend := &stubPortalBackend{
+			subscriptionCustomer: "cus_other_org",
+			subscriptionAddress:  "0x00000000000000000000000000000000000000bb",
+			addressCustomer:      "cus_address",
+		}
+		backend.install(t)
+		_, err := service.CreatePortalSession(orgWithSubscription)
+		c.Assert(err, qt.ErrorMatches, ".*belongs to organization.*")
 		c.Assert(backend.portalCustomers, qt.HasLen, 0)
 	})
 
