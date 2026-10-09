@@ -32,6 +32,12 @@ type InvoiceInfo struct {
 	OrgAddress  common.Address
 }
 
+// errPermanentEvent marks a webhook event that can never succeed: the metadata Stripe
+// delivered is immutable, so every one of its retries — Stripe retries for about three
+// days — would fail identically, burying real incidents in the endpoint's failure queue.
+// Wrap it and HandleWebhookEvent logs the event and answers Stripe with a 200 instead.
+var errPermanentEvent = fmt.Errorf("permanently invalid webhook event")
+
 // HandleWebhookEvent processes a webhook event with idempotency
 func (s *Service) HandleWebhookEvent(payload []byte, signatureHeader string) error {
 	// Validate and parse the event
@@ -48,7 +54,13 @@ func (s *Service) HandleWebhookEvent(payload []byte, signatureHeader string) err
 
 	// Process the event based on its type
 	if err := s.HandleEvent(event); err != nil {
-		return err
+		if !errors.Is(err, errPermanentEvent) {
+			return err
+		}
+		// terminal: a retry cannot fix it, so drop it here — and fall through to Store,
+		// so a retry that arrives anyway short-circuits on the event id
+		log.Errorw(err, fmt.Sprintf("stripe webhook: dropping permanently invalid event %s (%s)",
+			event.ID, event.Type))
 	}
 
 	// Mark event as processed if successful
@@ -94,29 +106,41 @@ func (s *Service) HandleEvent(event *stripeapi.Event) error {
 }
 
 // handleSubscription processes a subscription creation, update or deletion event. The event
-// payload is only trusted to identify the subscription: Stripe does not guarantee delivery
-// order and the processed-events map is empty after a restart, so a stale redelivered event
-// (e.g. an "active" update arriving after a cancellation) must never write old state. The
-// subscription is re-fetched from the Stripe API and its live state is what gets acted upon
-// — Stripe's recommended pattern for state-bearing webhook events.
+// payload is only trusted to route the event — the subscription id and the organization it
+// was created for: Stripe does not guarantee delivery order and the processed-events map is
+// empty after a restart, so a stale redelivered event (e.g. an "active" update arriving after
+// a cancellation) must never write old state. The subscription is re-fetched from the Stripe
+// API and its live state is what gets acted upon — Stripe's recommended pattern for
+// state-bearing webhook events. The fetch happens under the organization lock: fetched
+// before it, two concurrent events of one subscription could save their states in the
+// opposite order to the one they were read in, and the older one would win.
 func (s *Service) handleSubscription(event *stripeapi.Event) error {
-	eventInfo, err := parseSubscriptionFromEvent(event)
+	eventInfo, err := parseSubscriptionEventRoute(event)
 	if err != nil {
-		return fmt.Errorf("failed to parse subscription from event: %w", err)
+		return err
 	}
+
+	// Use per-organization locking
+	unlock := s.lockManager.LockOrganization(eventInfo.OrgAddress)
+	defer unlock()
 
 	liveSubscription, err := s.client.GetSubscription(eventInfo.ID)
 	if err != nil {
+		// transient (network, rate limit, outage): fail so Stripe redelivers the event
 		return fmt.Errorf("failed to fetch subscription %s from stripe: %w", eventInfo.ID, err)
 	}
 	subscriptionInfo, err := newSubscriptionInfo(liveSubscription)
 	if err != nil {
-		return fmt.Errorf("failed to parse live subscription %s: %w", liveSubscription.ID, err)
+		// a later edit of the subscription emits its own customer.subscription.updated event,
+		// so a retry of this one cannot be the event that fixes it
+		return fmt.Errorf("live subscription %s: %w: %w", eventInfo.ID, err, errPermanentEvent)
 	}
-
-	// Use per-organization locking
-	unlock := s.lockManager.LockOrganization(subscriptionInfo.OrgAddress)
-	defer unlock()
+	if subscriptionInfo.OrgAddress != eventInfo.OrgAddress {
+		// the address metadata was edited after this event: the update event of that edit
+		// carries the new address and is handled under that organization's lock
+		return fmt.Errorf("subscription %s now belongs to organization %s, not %s: %w",
+			eventInfo.ID, subscriptionInfo.OrgAddress, eventInfo.OrgAddress, errPermanentEvent)
+	}
 
 	// Get organization
 	org, err := s.db.Organization(subscriptionInfo.OrgAddress)
@@ -317,13 +341,29 @@ func (s *Service) handleProductDelete(event *stripeapi.Event) error {
 	return nil
 }
 
-// parseSubscriptionFromEvent extracts subscription information from a webhook event
-func parseSubscriptionFromEvent(event *stripeapi.Event) (*SubscriptionInfo, error) {
+// subscriptionEventRoute is what a subscription webhook event is trusted for: which
+// subscription it is about and which organization it was created for.
+type subscriptionEventRoute struct {
+	ID         string
+	OrgAddress common.Address
+}
+
+// parseSubscriptionEventRoute extracts the subscription id and organization address from a
+// subscription webhook event. The rest of the payload is ignored: it may be stale. The
+// payload of an event never changes, so a missing id or address is permanent.
+func parseSubscriptionEventRoute(event *stripeapi.Event) (*subscriptionEventRoute, error) {
 	var subscription stripeapi.Subscription
 	if err := json.Unmarshal(event.Data.Raw, &subscription); err != nil {
-		return nil, fmt.Errorf("failed to parse subscription from event: %v", err)
+		return nil, fmt.Errorf("failed to parse subscription from event %s: %v: %w", event.ID, err, errPermanentEvent)
 	}
-	return newSubscriptionInfo(&subscription)
+	if subscription.ID == "" {
+		return nil, fmt.Errorf("subscription event %s has no subscription id: %w", event.ID, errPermanentEvent)
+	}
+	orgAddress := common.HexToAddress(subscription.Metadata["address"])
+	if orgAddress.Cmp(common.Address{}) == 0 {
+		return nil, fmt.Errorf("subscription %s missing address metadata: %w", subscription.ID, errPermanentEvent)
+	}
+	return &subscriptionEventRoute{ID: subscription.ID, OrgAddress: orgAddress}, nil
 }
 
 // newSubscriptionInfo maps a Stripe subscription onto the fields the application acts on,
@@ -334,7 +374,7 @@ func newSubscriptionInfo(subscription *stripeapi.Subscription) (*SubscriptionInf
 		return nil, fmt.Errorf("subscription missing address metadata")
 	}
 
-	if len(subscription.Items.Data) == 0 {
+	if subscription.Items == nil || len(subscription.Items.Data) == 0 {
 		return nil, fmt.Errorf("subscription has no items")
 	}
 	item := subscription.Items.Data[0]

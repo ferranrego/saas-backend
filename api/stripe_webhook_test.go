@@ -254,14 +254,17 @@ func TestStripeWebhook(t *testing.T) {
 			s := mockStripeSubscription(orgAddress, mockEssentialPlan.ID)
 			s.Metadata = nil
 			err := service.HandleEvent(mockStripeEvent(stripeapi.EventTypeCustomerSubscriptionCreated, s))
-			c.Assert(err, qt.ErrorMatches, ".* subscription missing address metadata")
+			c.Assert(err, qt.ErrorMatches, ".*missing address metadata.*")
 		}
 
+		// the payload is only used to route the event: it is the live subscription that must
+		// carry items
 		{
 			s := mockStripeSubscription(orgAddress, mockEssentialPlan.ID)
 			s.Items.Data = nil
+			liveSubs[s.ID] = s
 			err := service.HandleEvent(mockStripeEvent(stripeapi.EventTypeCustomerSubscriptionCreated, s))
-			c.Assert(err, qt.ErrorMatches, ".* subscription has no items")
+			c.Assert(err, qt.ErrorMatches, ".*subscription has no items.*")
 		}
 	})
 
