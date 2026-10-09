@@ -52,9 +52,26 @@ func (s *Service) HandleWebhookEvent(payload []byte, signatureHeader string) err
 	}
 
 	// Mark event as processed if successful
-	s.processedEvents.Store(event.ID, time.Now())
+	now := time.Now()
+	s.processedEvents.Store(event.ID, now)
+	s.pruneProcessedEvents(now)
 
 	return nil
+}
+
+// processedEventsRetention is how long a processed event id is remembered. Stripe stops retrying
+// an event after three days, so older ids can no longer be redelivered.
+const processedEventsRetention = 72 * time.Hour
+
+// pruneProcessedEvents forgets the event ids processed longer than processedEventsRetention ago,
+// so the dedup map does not grow for as long as the service runs.
+func (s *Service) pruneProcessedEvents(now time.Time) {
+	s.processedEvents.Range(func(id, processedAt any) bool {
+		if t, ok := processedAt.(time.Time); ok && now.Sub(t) > processedEventsRetention {
+			s.processedEvents.Delete(id)
+		}
+		return true
+	})
 }
 
 func (s *Service) HandleEvent(event *stripeapi.Event) error {
@@ -76,11 +93,25 @@ func (s *Service) HandleEvent(event *stripeapi.Event) error {
 	}
 }
 
-// handleSubscription processes a subscription creation or update event
+// handleSubscription processes a subscription creation, update or deletion event. The event
+// payload is only trusted to identify the subscription: Stripe does not guarantee delivery
+// order and the processed-events map is empty after a restart, so a stale redelivered event
+// (e.g. an "active" update arriving after a cancellation) must never write old state. The
+// subscription is re-fetched from the Stripe API and its live state is what gets acted upon
+// — Stripe's recommended pattern for state-bearing webhook events.
 func (s *Service) handleSubscription(event *stripeapi.Event) error {
-	subscriptionInfo, err := parseSubscriptionFromEvent(event)
+	eventInfo, err := parseSubscriptionFromEvent(event)
 	if err != nil {
 		return fmt.Errorf("failed to parse subscription from event: %w", err)
+	}
+
+	liveSubscription, err := s.client.GetSubscription(eventInfo.ID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch subscription %s from stripe: %w", eventInfo.ID, err)
+	}
+	subscriptionInfo, err := newSubscriptionInfo(liveSubscription)
+	if err != nil {
+		return fmt.Errorf("failed to parse live subscription %s: %w", liveSubscription.ID, err)
 	}
 
 	// Use per-organization locking
@@ -100,6 +131,13 @@ func (s *Service) handleSubscription(event *stripeapi.Event) error {
 		return s.handleSubscriptionCreateOrUpdate(subscriptionInfo, org)
 	case stripeapi.SubscriptionStatusCanceled,
 		stripeapi.SubscriptionStatusUnpaid:
+		// only the organization's current subscription can downgrade it: after a plan change,
+		// the cancellation of the replaced subscription may arrive after the new one is saved
+		if current := org.Subscription.StripeSubscriptionID; current != "" && current != subscriptionInfo.ID {
+			log.Warnw("stripe webhook: ignoring cancellation of a subscription that is not the current one",
+				"subscription", subscriptionInfo.ID, "current", current, "org", org.Address)
+			return nil
+		}
 		return s.handleSubscriptionCancellation(subscriptionInfo.ID, org)
 	default:
 		// No action needed for other statuses
@@ -285,7 +323,12 @@ func parseSubscriptionFromEvent(event *stripeapi.Event) (*SubscriptionInfo, erro
 	if err := json.Unmarshal(event.Data.Raw, &subscription); err != nil {
 		return nil, fmt.Errorf("failed to parse subscription from event: %v", err)
 	}
+	return newSubscriptionInfo(&subscription)
+}
 
+// newSubscriptionInfo maps a Stripe subscription onto the fields the application acts on,
+// validating that everything it needs (org address metadata, customer, plan, price) is there.
+func newSubscriptionInfo(subscription *stripeapi.Subscription) (*SubscriptionInfo, error) {
 	orgAddress := common.HexToAddress(subscription.Metadata["address"])
 	if orgAddress.Cmp(common.Address{}) == 0 {
 		return nil, fmt.Errorf("subscription missing address metadata")
@@ -293,6 +336,10 @@ func parseSubscriptionFromEvent(event *stripeapi.Event) (*SubscriptionInfo, erro
 
 	if len(subscription.Items.Data) == 0 {
 		return nil, fmt.Errorf("subscription has no items")
+	}
+	item := subscription.Items.Data[0]
+	if subscription.Customer == nil || item.Plan == nil || item.Plan.Product == nil || item.Price == nil {
+		return nil, fmt.Errorf("subscription %s is missing its customer, plan or price", subscription.ID)
 	}
 
 	subscriptionInfo := &SubscriptionInfo{
@@ -305,8 +352,8 @@ func parseSubscriptionFromEvent(event *stripeapi.Event) (*SubscriptionInfo, erro
 		EndDate:    time.Unix(subscription.Items.Data[0].CurrentPeriodEnd, 0),
 	}
 
-	if subscription.Items.Data[0].Price.Type == stripeapi.PriceTypeRecurring {
-		subscriptionInfo.BillingPeriod = db.BillingPeriod((subscription.Items.Data[0].Price.Recurring.Interval))
+	if item.Price.Type == stripeapi.PriceTypeRecurring && item.Price.Recurring != nil {
+		subscriptionInfo.BillingPeriod = db.BillingPeriod(subscription.Items.Data[0].Price.Recurring.Interval)
 	}
 
 	return subscriptionInfo, nil
