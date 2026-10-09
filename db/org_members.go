@@ -828,7 +828,7 @@ func (ms *MongoStorage) GetAllOrgMemberIDs(orgAddress common.Address) ([]string,
 	}
 
 	// create a context with a timeout
-	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), bulkTimeout)
 	defer cancel()
 
 	// Create filter for the organization
@@ -965,7 +965,7 @@ func (ms *MongoStorage) FilterOrgMemberIDs(orgAddress common.Address, ids []stri
 		return nil, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), bulkTimeout)
 	defer cancel()
 
 	cursor, err := ms.orgMembers.Find(ctx,
