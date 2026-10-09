@@ -1,6 +1,7 @@
 package stripe
 
 import (
+	stderrors "errors"
 	"fmt"
 
 	stripeapi "github.com/stripe/stripe-go/v82"
@@ -83,10 +84,18 @@ func (*Client) GetSubscription(subscriptionID string) (*stripeapi.Subscription, 
 	params.AddExpand("customer")
 	subscription, err := stripesubscription.Get(subscriptionID, params)
 	if err != nil {
+		var stripeErr *stripeapi.Error
+		if stderrors.As(err, &stripeErr) && stripeErr.Code == stripeapi.ErrorCodeResourceMissing {
+			return nil, fmt.Errorf("subscription %s: %w", subscriptionID, errSubscriptionNotFound)
+		}
 		return nil, errors.ErrStripeError.Withf("failed to get subscription: %v", err)
 	}
 	return subscription, nil
 }
+
+// errSubscriptionNotFound is Stripe answering that a subscription does not exist: unlike a
+// network or rate-limit failure, asking again will not change the answer.
+var errSubscriptionNotFound = fmt.Errorf("subscription not found")
 
 // GetProduct retrieves a product by ID with expanded default price
 func (*Client) GetProduct(productID string) (*stripeapi.Product, error) {

@@ -103,6 +103,14 @@ func TestHandleSubscriptionEventRouting(t *testing.T) {
 		c.Assert(err, qt.ErrorIs, errPermanentEvent)
 	})
 
+	c.Run("a subscription Stripe says does not exist is permanent", func(c *qt.C) {
+		stubLiveSubscription(t, liveSub(orgA), nil)
+		err := newService().HandleEvent(subscriptionEvent(
+			`{"id":"sub_missing","object":"subscription","metadata":{"address":"` + orgA.Hex() + `"}}`))
+		c.Assert(err, qt.ErrorIs, errPermanentEvent)
+		c.Assert(err, qt.ErrorIs, errSubscriptionNotFound)
+	})
+
 	c.Run("a failed live fetch is retryable", func(c *qt.C) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusTooManyRequests)

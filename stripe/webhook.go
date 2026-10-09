@@ -125,6 +125,10 @@ func (s *Service) handleSubscription(event *stripeapi.Event) error {
 	defer unlock()
 
 	liveSubscription, err := s.client.GetSubscription(eventInfo.ID)
+	if errors.Is(err, errSubscriptionNotFound) {
+		// Stripe says it does not exist: no redelivery can change that
+		return fmt.Errorf("failed to fetch subscription %s from stripe: %w: %w", eventInfo.ID, err, errPermanentEvent)
+	}
 	if err != nil {
 		// transient (network, rate limit, outage): fail so Stripe redelivers the event
 		return fmt.Errorf("failed to fetch subscription %s from stripe: %w", eventInfo.ID, err)
