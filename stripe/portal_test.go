@@ -18,7 +18,8 @@ type stubPortalBackend struct {
 	subscriptionCustomer string
 	// addressCustomer answers the customer search by address metadata; empty means no match
 	addressCustomer string
-	// emailCustomers answers the customer list by email, in order
+	// emailCustomers answers any customer list by email, in order. The portal must never
+	// use it: every case that reaches it would hand out a customer it cannot tie to the org.
 	emailCustomers []string
 	// portalCustomers records the customer of each portal session created
 	portalCustomers []string
@@ -50,7 +51,7 @@ func (b *stubPortalBackend) install(t *testing.T) {
 				if i > 0 {
 					data += ","
 				}
-				data += `{"id":"` + id + `","object":"customer"}`
+				data += `{"id":"` + id + `","object":"customer","metadata":{}}`
 			}
 			_, _ = w.Write([]byte(`{"object":"list","url":"/v1/customers","has_more":false,"data":[` + data + `]}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/billing_portal/sessions":
@@ -73,9 +74,8 @@ func (b *stubPortalBackend) install(t *testing.T) {
 
 // TestCreatePortalSessionResolvesOrgCustomer pins the portal customer resolution order: the
 // customer of the organization's current subscription first, then the customer stamped with
-// the organization's address metadata, and the creator's email only as a last resort — and
-// then only when exactly one customer matches, so a creator of two organizations (or two
-// customers sharing an email) can never be handed another organization's portal.
+// the organization's address metadata, and nothing else — never a customer matched by email,
+// which a creator shares across every organization they create.
 func TestCreatePortalSessionResolvesOrgCustomer(t *testing.T) {
 	c := qt.New(t)
 	orgAddress := common.HexToAddress("0x1234567890123456789012345678901234567890")
@@ -128,23 +128,16 @@ func TestCreatePortalSessionResolvesOrgCustomer(t *testing.T) {
 		c.Assert(backend.portalCustomers, qt.DeepEquals, []string{"cus_address"})
 	})
 
-	c.Run("email fallback only when exactly one customer matches", func(c *qt.C) {
+	// creator X owns organizations A and B; B paid for a process, whose one-time checkout left
+	// an unstamped customer under X's email. An admin of A (not a member of B) opening A's
+	// portal must not be handed that customer, the only one matching the creator's email.
+	c.Run("another organization's unstamped customer sharing the creator's email is never used", func(c *qt.C) {
 		backend := &stubPortalBackend{
-			emailCustomers: []string{"cus_email"},
+			emailCustomers: []string{"cus_org_b_process_payment"},
 		}
 		backend.install(t)
 		_, err := service.CreatePortalSession(orgWithoutSubscription)
-		c.Assert(err, qt.IsNil)
-		c.Assert(backend.portalCustomers, qt.DeepEquals, []string{"cus_email"})
-	})
-
-	c.Run("ambiguous email is refused", func(c *qt.C) {
-		backend := &stubPortalBackend{
-			emailCustomers: []string{"cus_email_a", "cus_email_b"},
-		}
-		backend.install(t)
-		_, err := service.CreatePortalSession(orgWithoutSubscription)
-		c.Assert(err, qt.ErrorMatches, ".*more than one customer matches email.*")
+		c.Assert(err, qt.ErrorMatches, ".*not found.*")
 		c.Assert(backend.portalCustomers, qt.HasLen, 0)
 	})
 

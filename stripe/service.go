@@ -96,10 +96,9 @@ func (s *Service) GetCheckoutSession(sessionID string) (*CheckoutSessionStatus, 
 
 // CreatePortalSession creates a billing portal session for the organization's own Stripe
 // customer. The customer is resolved from the organization itself — the customer holding
-// its current subscription, or the one stamped with its address metadata — and only as a
-// last resort by the creator's email, which is unique neither per creator (one user can
-// create several organizations) nor per customer: resolving by email alone could hand an
-// admin another organization's billing portal.
+// its current subscription, or the one stamped with its address metadata — and never by
+// email: the creator's email is shared by every organization they create, so an email
+// match could hand an admin another organization's billing portal.
 func (s *Service) CreatePortalSession(org *db.Organization) (*stripeapi.BillingPortalSession, error) {
 	customerID, err := s.portalCustomerID(org)
 	if err != nil {
@@ -124,13 +123,7 @@ func (s *Service) portalCustomerID(org *db.Organization) (string, error) {
 		return subscription.Customer.ID, nil
 	}
 	// the subscription webhook stamps the organization address on its customer's metadata
-	if customer, err := s.client.GetCustomerByAddress(org.Address.String()); err == nil {
-		return customer.ID, nil
-	}
-	// last resort for customers that never got their address stamped: the creator's email,
-	// accepted only when it identifies exactly one customer (GetCustomerByEmail refuses an
-	// ambiguous match)
-	customer, err := s.client.GetCustomerByEmail(org.Creator)
+	customer, err := s.client.GetCustomerByAddress(org.Address.String())
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve the customer of organization %s: %w", org.Address, err)
 	}

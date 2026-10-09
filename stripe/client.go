@@ -47,30 +47,6 @@ func (*Client) GetCustomer(customerID string) (*stripeapi.Customer, error) {
 	return customer, nil
 }
 
-// GetCustomerByEmail retrieves the customer with the given email address. Emails are not
-// unique across Stripe customers, so an ambiguous match is an error: acting on "the first"
-// customer of an email could hand a caller another account that happens to share it.
-func (*Client) GetCustomerByEmail(email string) (*stripeapi.Customer, error) {
-	params := &stripeapi.CustomerListParams{
-		Email: stripeapi.String(email),
-	}
-	params.Filters.AddFilter("limit", "", "2")
-
-	customers := stripecustomer.List(params)
-	if !customers.Next() {
-		if err := customers.Err(); err != nil {
-			return nil, errors.ErrStripeError.Withf("failed to list customers: %v", err)
-		}
-		return nil, errors.ErrStripeError.Withf("customer with email %s not found", email)
-	}
-	customer := customers.Customer()
-	if customers.Next() {
-		return nil, errors.ErrStripeError.Withf("more than one customer matches email %s", email)
-	}
-
-	return customer, nil
-}
-
 // UpdateCustomerMetadata updates a customer's metadata
 func (*Client) UpdateCustomerMetadata(customerID string, metadata map[string]string) error {
 	params := &stripeapi.CustomerParams{
