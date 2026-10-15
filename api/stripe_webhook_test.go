@@ -249,6 +249,22 @@ func TestStripeWebhook(t *testing.T) {
 		}
 	})
 
+	t.Run("SubscriptionUpdateWithStampedCustomer", func(*testing.T) {
+		// after the first event the customer carries the organization address: later updates
+		// must still be accepted, also when the customer is stamped for another organization
+		for _, stamped := range []string{orgAddress.String(), common.Address{0xde, 0xad}.String()} {
+			s := mockStripeSubscription(orgAddress, mockEssentialPlan.ID)
+			s.Customer.Metadata = map[string]string{"address": stamped}
+			liveSubs[s.ID] = s
+			err := service.HandleEvent(mockStripeEvent(stripeapi.EventTypeCustomerSubscriptionUpdated, s))
+			c.Assert(err, qt.IsNil)
+			org, err := testDB.Organization(orgAddress)
+			c.Assert(err, qt.IsNil)
+			c.Assert(org.Subscription.StripeSubscriptionID, qt.Equals, s.ID)
+			c.Assert(org.Subscription.PlanID, qt.Equals, mockEssentialPlan.ID)
+		}
+	})
+
 	t.Run("SubscriptionErrors", func(*testing.T) {
 		{
 			s := mockStripeSubscription(orgAddress, mockEssentialPlan.ID)

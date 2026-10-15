@@ -196,16 +196,20 @@ func (s *Service) handleSubscriptionCreateOrUpdate(subscriptionInfo *Subscriptio
 			subscriptionInfo.ID, plan.ID, subscriptionInfo.Status, subscriptionInfo.OrgAddress, err)
 	}
 
-	// Update if needed customer metadata with organization address
-	if subscriptionInfo.Customer.Metadata["address"] != "" {
-		return fmt.Errorf("customer metadata address mismatch")
-	}
-	if err := s.client.UpdateCustomerMetadata(
-		subscriptionInfo.Customer.ID,
-		map[string]string{"address": subscriptionInfo.OrgAddress.String()},
-	); err != nil {
-		log.Warnf("stripe webhook: failed to update customer %s metadata: %v",
-			subscriptionInfo.Customer.ID, err)
+	// Stamp the customer with the organization address the first time; a customer already
+	// stamped for another organization is left untouched, since the billing portal resolves
+	// the customer from that address
+	if stamped := subscriptionInfo.Customer.Metadata["address"]; stamped == "" {
+		if err := s.client.UpdateCustomerMetadata(
+			subscriptionInfo.Customer.ID,
+			map[string]string{"address": subscriptionInfo.OrgAddress.String()},
+		); err != nil {
+			log.Warnf("stripe webhook: failed to update customer %s metadata: %v",
+				subscriptionInfo.Customer.ID, err)
+		}
+	} else if common.HexToAddress(stamped) != subscriptionInfo.OrgAddress {
+		log.Warnw("stripe webhook: customer is stamped with another organization address",
+			"customer", subscriptionInfo.Customer.ID, "stamped", stamped, "org", subscriptionInfo.OrgAddress)
 	}
 	log.Infof("stripe webhook: subscription %s (planID=%s, status=%s) saved for organization %s",
 		subscriptionInfo.ID, plan.ID, subscriptionInfo.Status, subscriptionInfo.OrgAddress)
