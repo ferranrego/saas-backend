@@ -10,6 +10,7 @@ import (
 
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/vocdoni/saas-backend/db"
+	"github.com/vocdoni/saas-backend/internal"
 )
 
 var (
@@ -27,12 +28,12 @@ var (
 
 const (
 	// MaxObjectSize is the largest object (image) that can be stored.
-	MaxObjectSize = 10 << 20
+	MaxObjectSize = 10 * internal.MiB
 	// MaxUploadBodySize caps the whole multipart body of an upload request.
 	MaxUploadBodySize = 4 * MaxObjectSize
 	// maxCachedObjectSize is the largest object kept in the in-memory cache: with a fixed number
 	// of cache entries, it is what bounds the memory the cache retains.
-	maxCachedObjectSize = 512 << 10
+	maxCachedObjectSize = 512 * internal.KiB
 )
 
 // ObjectFileType represents the MIME type of a stored object file.

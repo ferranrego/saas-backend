@@ -23,14 +23,14 @@ import (
 const (
 	// maxCredentialsBodyBytes caps the body of the login, registration and password endpoints,
 	// whose payloads are a handful of short strings.
-	maxCredentialsBodyBytes = 16 << 10
+	maxCredentialsBodyBytes = 16 * internal.KiB
 	// maxPublicBodyBytes caps every request body on the public route group; the largest public
 	// body is a full batch vote relay (maxVotesBodyBytes).
-	maxPublicBodyBytes = maxVotesBodyBytes + 64<<10
+	maxPublicBodyBytes = maxVotesBodyBytes + 64*internal.KiB
 	// maxProtectedBodyBytes caps every request body on the authenticated route group. It is sized
 	// for bulk member imports (a few hundred thousand members per request); handlers with smaller
 	// natural sizes cap their body further.
-	maxProtectedBodyBytes = 128 << 20
+	maxProtectedBodyBytes = 128 * internal.MiB
 
 	// HTTP server socket deadlines. The read timeout leaves room for large authenticated uploads
 	// (census imports) on slow links; the write timeout runs from the end of the headers, so it

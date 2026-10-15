@@ -14,6 +14,7 @@ import (
 	"github.com/vocdoni/saas-backend/api/apicommon"
 	"github.com/vocdoni/saas-backend/db"
 	"github.com/vocdoni/saas-backend/errors"
+	"github.com/vocdoni/saas-backend/internal"
 	"go.vocdoni.io/dvote/log"
 )
 
@@ -431,7 +432,7 @@ func (a *API) oauthUnlinkHandler(w http.ResponseWriter, r *http.Request) {
 const oauthRequestTimeout = 10 * time.Second
 
 // maxOAuthResponseBytes caps the OAuth service response, which is a single address.
-const maxOAuthResponseBytes = 64 << 10
+const maxOAuthResponseBytes = 64 * internal.KiB
 
 // oauthServiceAddress fetches the address the OAuth service signs with.
 func (a *API) oauthServiceAddress(ctx context.Context) (*apicommon.OAuthServiceAddressResponse, error) {
