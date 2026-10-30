@@ -753,6 +753,10 @@ func (pw *publishWorker) renewClaim(stop <-chan struct{}) {
 func (pw *publishWorker) persistPublished(q *db.VotingProcessQuestion, upstreamID internal.HexBytes) bool {
 	pw.minedUnpersisted[q.ID] = upstreamID
 	initialStatus := publishedQuestionStatus(pw.vp)
+	metadataURL := q.MetadataURL
+	if metadataURL == "" && len(q.PublishTxs) > 0 {
+		metadataURL = q.PublishTxs[0].MetadataURL // the in-memory URL did not survive a reload
+	}
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -765,7 +769,7 @@ func (pw *publishWorker) persistPublished(q *db.VotingProcessQuestion, upstreamI
 		if err = pw.a.db.MarkVotingProcessMined(pw.vp.ID); err != nil {
 			continue
 		}
-		if err = pw.a.db.SetQuestionPublished(q.ID, upstreamID, q.MetadataURL, initialStatus); err == nil {
+		if err = pw.a.db.SetQuestionPublished(q.ID, upstreamID, metadataURL, initialStatus); err == nil {
 			q.UpstreamID = upstreamID
 			delete(pw.minedUnpersisted, q.ID)
 			return true
