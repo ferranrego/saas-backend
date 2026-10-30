@@ -45,6 +45,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/vocdoni/saas-backend/api"
 	"github.com/vocdoni/saas-backend/db"
+	apierrors "github.com/vocdoni/saas-backend/errors"
 )
 
 // options holds the parsed CLI flags.
@@ -144,6 +145,12 @@ func deleteDrafts(w io.Writer, ms *db.MongoStorage, user *db.User) error {
 			continue
 		}
 		if err := api.DeleteOrgDrafts(ms, userOrg.Address); err != nil {
+			if apierrors.Is(err, apierrors.ErrPublishInProgress) {
+				// without a chain client it cannot tell whether a submitted election exists
+				return fmt.Errorf("could not delete the drafts of org %s, nothing else was erased: %w; "+
+					"run the service so it settles the draft's publish, or delete the draft through the API, first",
+					userOrg.Address, err)
+			}
 			return fmt.Errorf("could not delete the drafts of org %s, nothing else was erased: %w", userOrg.Address, err)
 		}
 		tornDown = append(tornDown, userOrg.Address)
